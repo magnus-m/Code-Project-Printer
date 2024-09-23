@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Code Project Printer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        #output {
+            white-space: pre-wrap;
+            background-color: #f7f7f7;
+            padding: 10px;
+            border: 1px solid #ccc;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        #downloadLink {
+            display: none;
+            margin-top: 20px;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Code Project Printer</h1>
+<input type="file" id="fileInput" accept=".zip"><br><br>
+<label for="excludeExtensions">Exclude file extensions (comma-separated, e.g., .log,.tmp):</label><br>
+<input type="text" id="excludeExtensions" placeholder=".log,.tmp"><br><br>
+<button id="processButton">Process</button>
+<div id="output"></div>
+<a id="downloadLink" href="#" download="output.txt">Download Output File</a>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+    document.getElementById('processButton').addEventListener('click', function() {
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput.files.length === 0) {
+            alert('Please select a ZIP file.');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        if (file.type !== 'application/zip' && !file.name.endsWith('.zip')) {
+            alert('Please select a valid ZIP file.');
+            return;
+        }
+
+        processZipFile(file);
+    });
+
+    async function processZipFile(file) {
+        const zip = new JSZip();
+        const outputParts = [];
+        const ignorePatterns = [];
+        const binaryFileExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.ico', '.exe', '.dll', '.so', '.dylib', '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar'];
+
+        // Get user-specified extensions to exclude
+        const userExcludeExtensionsInput = document.getElementById('excludeExtensions').value;
+        let userExcludeExtensions = [];
+        if (userExcludeExtensionsInput.trim() !== '') {
+            userExcludeExtensions = userExcludeExtensionsInput.split(',').map(ext => ext.trim());
+        }
+
+        try {
+            const zipContent = await zip.loadAsync(file);
+            // Find .ignore or .gitignore file
+            let ignoreFileName = '.ignore';
+            if (!zipContent.file(ignoreFileName)) {
+                ignoreFileName = '.gitignore';
+            }
+            if (zipContent.file(ignoreFileName)) {
+                const ignoreFileContent = await zipContent.file(ignoreFileName).async('string');
+                ignoreFileContent.split('\n').forEach(pattern => {
+                    pattern = pattern.trim();
+                    if (pattern && !pattern.startsWith('#')) {
+                        ignorePatterns.push(pattern);
+                    }
+                });
+            }
+
+            // Function to check if a file should be ignored
+            function isIgnored(path) {
+                // Exclude hidden files and folders (starting with .)
+                const pathParts = path.split('/');
+                if (pathParts.some(part => part.startsWith('.'))) {
+                    return true;
+                }
+
+                // Check against ignore patterns
+                if (ignorePatterns.some(pattern => {
+                    // Simple pattern matching
+                    const regex = new RegExp(pattern.replace('.', '\\.').replace('*', '.*'));
+                    return regex.test(path);
+                })) {
+                    return true;
+                }
+
+                // Check if file extension is in user-specified exclude list
+                if (userExcludeExtensions.some(ext => path.endsWith(ext))) {
+                    return true;
+                }
+
+                return false;
+            }
+
+            // Function to check if a file is binary
+            function isBinary(path) {
+                return binaryFileExtensions.some(ext => path.endsWith(ext));
+            }
+
+            for (const relativePath in zipContent.files) {
+                const fileObj = zipContent.files[relativePath];
+                if (fileObj.dir) continue; // Skip directories
+
+                if (isIgnored(relativePath) || isBinary(relativePath)) continue;
+
+                const content = await fileObj.async('string');
+                outputParts.push(`Filename: ${relativePath}\n<filecontent>\n${content}\n</filecontent>\n`);
+            }
+
+            const outputText = outputParts.join('\n');
+
+            if (new Blob([outputText]).size < 1048576) { // Less than 1 MB
+                document.getElementById('output').textContent = outputText;
+            } else {
+                document.getElementById('output').textContent = 'Output is larger than 1 MB. Please download the file.';
+            }
+
+            // Create a download link
+            const blob = new Blob([outputText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const downloadLink = document.getElementById('downloadLink');
+            downloadLink.href = url;
+            downloadLink.style.display = 'inline';
+        } catch (err) {
+            console.error(err);
+            alert('An error occurred while processing the ZIP file.');
+        }
+    }
+</script>
+
+</body>
+</html>
