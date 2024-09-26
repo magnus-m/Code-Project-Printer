@@ -9,7 +9,8 @@
             margin: 20px;
         }
         #output {
-            white-space: pre-wrap;
+            white-space: pre;
+            font-family: monospace;
             background-color: #f7f7f7;
             padding: 10px;
             border: 1px solid #ccc;
@@ -20,8 +21,15 @@
             display: none;
             margin-top: 20px;
         }
-        .hidden {
-            display: none;
+        #tokenCount {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        input[type="text"] {
+            width: 100%;
+            max-width: 600px;
+            padding: 8px;
+            font-size: 14px;
         }
     </style>
 </head>
@@ -29,9 +37,18 @@
 
 <h1>Code Project Printer</h1>
 <input type="file" id="fileInput" accept=".zip"><br><br>
+
 <label for="excludeExtensions">Exclude file extensions (comma-separated, e.g., .log,.tmp):</label><br>
-<input type="text" id="excludeExtensions" placeholder=".log,.tmp"><br><br>
+<input type="text" id="excludeExtensions" value=".csv,.log"><br><br>
+
+<label for="excludeFolders">Exclude folders (comma-separated, e.g., node_modules,dist):</label><br>
+<input type="text" id="excludeFolders" value=".git"><br><br>
+
+<label for="binaryExtensions">Binary file extensions (comma-separated, e.g., .png,.jpg):</label><br>
+<input type="text" id="binaryExtensions" value=".png,.jpg,.jpeg,.gif,.bmp,.tiff,.ico,.exe,.dll,.so,.dylib,.pdf,.zip,.tar,.gz,.7z,.rar"><br><br>
+
 <button id="processButton">Process</button>
+<div id="tokenCount"></div>
 <div id="output"></div>
 <a id="downloadLink" href="#" download="output.txt">Download Output File</a>
 
@@ -57,7 +74,6 @@
         const zip = new JSZip();
         const outputParts = [];
         const ignorePatterns = [];
-        const binaryFileExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.ico', '.exe', '.dll', '.so', '.dylib', '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar'];
 
         // Get user-specified extensions to exclude
         const userExcludeExtensionsInput = document.getElementById('excludeExtensions').value;
@@ -66,8 +82,30 @@
             userExcludeExtensions = userExcludeExtensionsInput.split(',').map(ext => ext.trim());
         }
 
+        // Get user-specified folders to exclude
+        const userExcludeFoldersInput = document.getElementById('excludeFolders').value;
+        let userExcludeFolders = [];
+        if (userExcludeFoldersInput.trim() !== '') {
+            userExcludeFolders = userExcludeFoldersInput.split(',').map(folder => folder.trim());
+        }
+
+        // Get user-specified binary file extensions
+        const userBinaryExtensionsInput = document.getElementById('binaryExtensions').value;
+        let binaryFileExtensions = [];
+        if (userBinaryExtensionsInput.trim() !== '') {
+            binaryFileExtensions = userBinaryExtensionsInput.split(',').map(ext => ext.trim());
+        }
+
         try {
             const zipContent = await zip.loadAsync(file);
+
+            // Collect all file paths
+            const allPaths = Object.keys(zipContent.files).filter(path => !isFolderExcluded(path));
+
+            // Build file tree
+            const fileTree = buildFileTree(allPaths);
+            const fileTreeText = 'File Tree Structure:\n' + '.\n' + treeToString(fileTree);
+
             // Find .ignore or .gitignore file
             let ignoreFileName = '.ignore';
             if (!zipContent.file(ignoreFileName)) {
@@ -83,18 +121,33 @@
                 });
             }
 
+            // Function to check if a folder should be excluded
+            function isFolderExcluded(path) {
+                const pathParts = path.split('/');
+                if (pathParts.some(part => userExcludeFolders.includes(part))) {
+                    return true;
+                }
+                return false;
+            }
+
             // Function to check if a file should be ignored
             function isIgnored(path) {
-                // Exclude hidden files and folders (starting with .)
                 const pathParts = path.split('/');
+
+                // Exclude hidden files and folders (starting with .)
                 if (pathParts.some(part => part.startsWith('.'))) {
+                    return true;
+                }
+
+                // Check if any part of the path matches excluded folders
+                if (isFolderExcluded(path)) {
                     return true;
                 }
 
                 // Check against ignore patterns
                 if (ignorePatterns.some(pattern => {
                     // Simple pattern matching
-                    const regex = new RegExp(pattern.replace('.', '\\.').replace('*', '.*'));
+                    const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
                     return regex.test(path);
                 })) {
                     return true;
@@ -115,7 +168,7 @@
 
             for (const relativePath in zipContent.files) {
                 const fileObj = zipContent.files[relativePath];
-                if (fileObj.dir) continue; // Skip directories
+                if (fileObj.dir || isFolderExcluded(relativePath)) continue; // Skip directories and excluded folders
 
                 if (isIgnored(relativePath) || isBinary(relativePath)) continue;
 
@@ -123,7 +176,15 @@
                 outputParts.push(`Filename: ${relativePath}\n<filecontent>\n${content}\n</filecontent>\n`);
             }
 
-            const outputText = outputParts.join('\n');
+            let outputText = fileTreeText + "\n";
+            outputText += "Note: Files matching patterns in .ignore or .gitignore are excluded.\n\n";
+            outputText += outputParts.join('\n');
+
+            // Estimate token count
+            const totalCharacters = outputText.length;
+            const tokenCount = Math.ceil(totalCharacters / 4); // Approximate tokens
+
+            document.getElementById('tokenCount').textContent = `Estimated token count: ${tokenCount}`;
 
             if (new Blob([outputText]).size < 1048576) { // Less than 1 MB
                 document.getElementById('output').textContent = outputText;
@@ -141,6 +202,41 @@
             console.error(err);
             alert('An error occurred while processing the ZIP file.');
         }
+    }
+
+    function buildFileTree(paths) {
+        const tree = {};
+        paths.forEach(path => {
+            const parts = path.split('/');
+            let currentLevel = tree;
+            parts.forEach((part) => {
+                if (!currentLevel[part]) {
+                    currentLevel[part] = {};
+                }
+                currentLevel = currentLevel[part];
+            });
+        });
+        return tree;
+    }
+
+    function treeToString(tree, prefix = '', isLast = true) {
+        let result = '';
+        const entries = Object.entries(tree);
+        const lastIndex = entries.length - 1;
+        entries.forEach(([key, subtree], index) => {
+            const isLastChild = index === lastIndex;
+            result += prefix;
+            if (index === 0 && prefix === '') {
+                // Root node
+                result += '';
+            } else {
+                result += isLastChild ? '└── ' : '├── ';
+            }
+            result += key + '\n';
+            const newPrefix = prefix + (isLastChild ? '    ' : '│   ');
+            result += treeToString(subtree, newPrefix, isLastChild);
+        });
+        return result;
     }
 </script>
 
